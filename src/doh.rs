@@ -1,3 +1,4 @@
+use base64::Engine;
 use std::net::SocketAddr;
 
 use axum::body::Bytes;
@@ -17,20 +18,10 @@ const DOH_CONTENT_TYPE: &str = "application/dns-message";
 
 pub async fn doh_post(State(state): State<super::proxy::DohState>, req: Request) -> Response {
     let host = super::proxy::extract_host(&req);
-    if !is_doh_host(host.as_deref(), &state.ctx.proxy_tld) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-
-    // Gate DoH only — service-proxy routes on the same TLS listener
-    // aren't subject to the DNS ACL. Fail closed when the peer is unknown.
-    if state.ctx.allow_from.is_enabled() {
-        let allowed = state
-            .remote_addr
-            .is_some_and(|a| state.ctx.allow_from.allows(a.ip()));
-        if !allowed {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-    }
+    let src = match doh_validate(&state, host.as_deref()) {
+        Ok(src) => src,
+        Err(code) => return code.into_response(),
+    };
 
     let content_type = req
         .headers()
@@ -44,7 +35,7 @@ pub async fn doh_post(State(state): State<super::proxy::DohState>, req: Request)
     let body = match axum::body::to_bytes(req.into_body(), MAX_DNS_MSG).await {
         Ok(b) => b,
         Err(_) => {
-            return (StatusCode::PAYLOAD_TOO_LARGE, "body exceeds 4096 bytes").into_response()
+            return (StatusCode::PAYLOAD_TOO_LARGE, "body exceeds 4096 bytes").into_response();
         }
     };
 
@@ -52,11 +43,62 @@ pub async fn doh_post(State(state): State<super::proxy::DohState>, req: Request)
         return (StatusCode::BAD_REQUEST, "empty body").into_response();
     }
 
-    let src = state
-        .remote_addr
-        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
+    resolve_doh(&body, src, &state.ctx).await
+}
+
+pub async fn doh_get(State(state): State<super::proxy::DohState>, req: Request) -> Response {
+    let host = super::proxy::extract_host(&req);
+    let src = match doh_validate(&state, host.as_deref()) {
+        Ok(src) => src,
+        Err(code) => return code.into_response(),
+    };
+
+    let dns_param = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("dns=")))
+        .unwrap_or("");
+
+    if dns_param.is_empty() {
+        return (StatusCode::BAD_REQUEST, "missing dns query parameter").into_response();
+    }
+
+    let body = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(dns_param) {
+        Ok(b) => b,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "invalid base64url encoding").into_response();
+        }
+    };
+
+    if body.len() > MAX_DNS_MSG {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "body exceeds 4096 bytes").into_response();
+    }
 
     resolve_doh(&body, src, &state.ctx).await
+}
+
+fn doh_validate(
+    state: &super::proxy::DohState,
+    host: Option<&str>,
+) -> Result<SocketAddr, StatusCode> {
+    if !is_doh_host(host, &state.ctx.proxy_tld) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Gate DoH only — service-proxy routes on the same TLS listener
+    // aren't subject to the DNS ACL. Fail closed when the peer is unknown.
+    if state.ctx.allow_from.is_enabled() {
+        let allowed = state
+            .remote_addr
+            .is_some_and(|a| state.ctx.allow_from.allows(a.ip()));
+        if !allowed {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    Ok(state
+        .remote_addr
+        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0))))
 }
 
 fn is_doh_host(host: Option<&str>, tld: &str) -> bool {
@@ -172,6 +214,8 @@ mod tests {
     use crate::header::ResultCode;
     use crate::packet::DnsPacket;
     use crate::record::DnsRecord;
+    use axum::extract::State;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
     #[test]
     fn is_doh_host_matches_tld() {
@@ -248,5 +292,58 @@ mod tests {
 
         assert_eq!(resp.header.rescode, ResultCode::SERVFAIL);
         assert!(resp.edns.is_some(), "DoH SERVFAIL must mirror client's OPT");
+    }
+
+    async fn doh_get_response(query: &str) -> Response {
+        let ctx = std::sync::Arc::new(crate::testutil::test_ctx().await);
+        let state = crate::proxy::DohState {
+            ctx,
+            remote_addr: Some("127.0.0.1:1234".parse().unwrap()),
+        };
+        let req = Request::builder()
+            .uri(format!("/dns-query?{query}"))
+            .header(hyper::header::HOST, "localhost")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        doh_get(State(state), req).await
+    }
+
+    #[tokio::test]
+    async fn doh_get_rejects_missing_param() {
+        let resp = doh_get_response("name=example.com").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn doh_get_rejects_invalid_base64url() {
+        // valid URI char, invalid base64url (one symbol can't form a byte)
+        let resp = doh_get_response("dns=A").await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn doh_get_rejects_oversized() {
+        let param = URL_SAFE_NO_PAD.encode(vec![0u8; MAX_DNS_MSG + 1]);
+        let resp = doh_get_response(&format!("dns={param}")).await;
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn doh_get_decodes_param_and_resolves() {
+        // base64url(dns) → decode → resolve; empty-questions drives SERVFAIL.
+        let query = DnsPacket::new();
+        let mut buf = BytePacketBuffer::new();
+        query.write(&mut buf).unwrap();
+        let param = URL_SAFE_NO_PAD.encode(buf.filled());
+
+        let resp = doh_get_response(&format!("dns={param}")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), MAX_DNS_MSG)
+            .await
+            .unwrap();
+        let mut parse = BytePacketBuffer::from_bytes(&body);
+        let parsed = DnsPacket::from_buffer(&mut parse).unwrap();
+        assert_eq!(parsed.header.rescode, ResultCode::SERVFAIL);
     }
 }
