@@ -292,8 +292,10 @@ impl ServerStats {
         }
     }
 
-    pub fn record_rebind_stripped(&mut self, n: u64) {
-        self.rebind_stripped += n;
+    /// One per affected query (not per stripped RR), matching the other
+    /// per-query counters in `queries.*`.
+    pub fn record_rebind_stripped(&mut self) {
+        self.rebind_stripped += 1;
     }
 
     pub fn record(

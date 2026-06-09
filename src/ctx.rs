@@ -155,10 +155,7 @@ pub async fn resolve_query(
             // A stripped Secure answer is no longer the validated one; don't
             // claim AD over a NODATA the validator never proved.
             response.header.authed_data = false;
-            ctx.stats
-                .lock()
-                .unwrap()
-                .record_rebind_stripped(stripped as u64);
+            ctx.stats.lock().unwrap().record_rebind_stripped();
             info!(
                 "REBIND | {} | stripped {} private RR(s) | {}",
                 qname,
@@ -1412,6 +1409,37 @@ mod tests {
             "all-stripped is NODATA, not NXDOMAIN"
         );
         assert!(resp.answers.is_empty(), "private answer must be stripped");
+    }
+
+    #[tokio::test]
+    async fn pipeline_rebind_stats_count_queries_not_records() {
+        let mut resp = DnsPacket::new();
+        resp.header.response = true;
+        resp.header.rescode = ResultCode::NOERROR;
+        for last_octet in [1, 2] {
+            resp.answers.push(DnsRecord::A {
+                domain: "intranet.evil.test".to_string(),
+                addr: format!("192.168.1.{last_octet}").parse().unwrap(),
+                ttl: 60,
+            });
+        }
+        let upstream_addr = crate::testutil::mock_upstream(resp).await;
+
+        let mut ctx = crate::testutil::test_ctx().await;
+        ctx.rebind = RwLock::new(crate::rebind::RebindFilter::new(true, &[], &[]).unwrap());
+        ctx.forwarding_rules = vec![ForwardingRule::new(
+            "evil.test".to_string(),
+            UpstreamPool::new(vec![Upstream::Udp(upstream_addr)], vec![]),
+        )];
+        let ctx = Arc::new(ctx);
+
+        let (resp, _) = resolve_in_test(&ctx, "intranet.evil.test", QueryType::A).await;
+        assert!(resp.answers.is_empty(), "both private answers stripped");
+        assert_eq!(
+            ctx.stats.lock().unwrap().snapshot().rebind_stripped,
+            1,
+            "queries.rebind_stripped counts affected queries, not stripped RRs"
+        );
     }
 
     #[tokio::test]
