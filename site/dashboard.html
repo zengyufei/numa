@@ -211,6 +211,10 @@ body {
   grid-template-columns: 1fr 340px;
   gap: 1.2rem;
 }
+.main-grid > .panel {
+  display: flex;
+  flex-direction: column;
+}
 
 /* Panels */
 .panel {
@@ -290,7 +294,13 @@ body {
 
 /* Query log table */
 .query-log {
-  max-height: 600px;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.query-log-scroll {
+  position: absolute;
+  inset: 0;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--bg-elevated) transparent;
@@ -746,21 +756,23 @@ body {
         </div>
       </div>
       <div class="query-log" id="queryLog">
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Type</th>
-              <th>Domain</th>
-              <th>Path</th>
-              <th>Transport</th>
-              <th>Result</th>
-              <th>Latency</th>
-            </tr>
-          </thead>
-          <tbody id="queryLogBody">
-          </tbody>
-        </table>
+        <div class="query-log-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Domain</th>
+                <th>Path</th>
+                <th>Transport</th>
+                <th>Result</th>
+                <th>Latency</th>
+              </tr>
+            </thead>
+            <tbody id="queryLogBody">
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
