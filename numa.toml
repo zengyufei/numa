@@ -137,6 +137,7 @@ api_port = 5380
 # [[client_policy]]
 # from  = ["10.0.0.50"]          # a single host: stricter rules just for it
 # block = ["reddit.com"]
+# filter_aaaa = true             # override global [server].filter_aaaa for these clients (alone makes a rule valid)
 
 [cache]
 max_entries = 100000

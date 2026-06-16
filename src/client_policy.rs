@@ -23,12 +23,18 @@ pub struct ClientPolicyConfig {
     pub block: Vec<String>,
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Per-client override of `[server].filter_aaaa`. `None` (unset) inherits
+    /// the global default; `Some` forces AAAA filtering on/off for this rule's
+    /// clients (issue #286).
+    #[serde(default)]
+    pub filter_aaaa: Option<bool>,
 }
 
 #[derive(Debug)]
 struct ClientPolicy {
     nets: CidrMatcher,
     store: BlocklistStore,
+    filter_aaaa: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -54,9 +60,9 @@ impl ClientPolicySet {
             // Reuse the global blocklist parser so per-client and global lists can't drift.
             let blocks = parse_blocklist(&cfg.block.join("\n"));
             let allows = parse_blocklist(&cfg.allow.join("\n"));
-            if blocks.is_empty() && allows.is_empty() {
+            if blocks.is_empty() && allows.is_empty() && cfg.filter_aaaa.is_none() {
                 return Err(format!(
-                    "{ctx}: must specify at least one valid domain in `block` or `allow`"
+                    "{ctx}: must specify at least one valid domain in `block`/`allow`, or set `filter_aaaa`"
                 ));
             }
             let mut allow = crate::domain_list::PersistedDomainList::unpersisted();
@@ -71,6 +77,7 @@ impl ClientPolicySet {
             rules.push(ClientPolicy {
                 nets: CidrMatcher::from_entries(&cfg.from, &cfg.exclude, &format!("{ctx}.from"))?,
                 store,
+                filter_aaaa: cfg.filter_aaaa,
             });
         }
         Ok(ClientPolicySet { rules })
@@ -109,6 +116,25 @@ impl ClientPolicySet {
         }
         Decision::Passthrough
     }
+
+    /// Effective `filter_aaaa` for `peer`: the first matching rule that sets an
+    /// explicit override wins (declaration order, mirroring `evaluate`);
+    /// otherwise the global `[server].filter_aaaa` default applies. Loopback
+    /// bypasses the per-client path and keeps the global value.
+    pub fn effective_filter_aaaa(&self, peer: IpAddr, global: bool) -> bool {
+        let peer = peer.to_canonical();
+        if self.rules.is_empty() || peer.is_loopback() {
+            return global;
+        }
+        for rule in &self.rules {
+            if rule.nets.matches(peer) {
+                if let Some(v) = rule.filter_aaaa {
+                    return v;
+                }
+            }
+        }
+        global
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +157,15 @@ mod tests {
             exclude: exclude.iter().map(|s| s.to_string()).collect(),
             block: block.iter().map(|s| s.to_string()).collect(),
             allow: allow.iter().map(|s| s.to_string()).collect(),
+            filter_aaaa: None,
+        }
+    }
+
+    fn cfg_aaaa(from: &[&str], filter_aaaa: Option<bool>) -> ClientPolicyConfig {
+        ClientPolicyConfig {
+            from: from.iter().map(|s| s.to_string()).collect(),
+            filter_aaaa,
+            ..Default::default()
         }
     }
 
@@ -310,7 +345,7 @@ mod tests {
     #[test]
     fn rejects_empty_block_and_allow() {
         let err = ClientPolicySet::from_configs(&[cfg(&["192.168.1.0/24"], &[], &[])]).unwrap_err();
-        assert!(err.contains("`block` or `allow`"));
+        assert!(err.contains("`block`/`allow`"));
     }
 
     #[test]
@@ -337,5 +372,88 @@ mod tests {
                 ("192.168.1.254", "youtube.com", Passthrough),
             ],
         );
+    }
+
+    // ── per-client filter_aaaa override (issue #286) ────────────────────────
+
+    fn eff(set: &ClientPolicySet, peer: &str, global: bool) -> bool {
+        set.effective_filter_aaaa(peer.parse().unwrap(), global)
+    }
+
+    #[test]
+    fn filter_aaaa_inherits_global_when_no_rule_matches() {
+        let set = policy(&[cfg_aaaa(&["10.210.0.0/16"], Some(true))]);
+        assert!(
+            !eff(&set, "192.168.1.5", false),
+            "unmatched inherits global"
+        );
+        assert!(eff(&set, "192.168.1.5", true), "unmatched inherits global");
+    }
+
+    #[test]
+    fn filter_aaaa_override_forces_on_over_global_false() {
+        let set = policy(&[cfg_aaaa(&["10.210.0.0/16"], Some(true))]);
+        assert!(eff(&set, "10.210.0.5", false), "match forces filter on");
+    }
+
+    #[test]
+    fn filter_aaaa_override_forces_off_over_global_true() {
+        let set = policy(&[cfg_aaaa(&["2001:db8::/32"], Some(false))]);
+        assert!(
+            !eff(&set, "2001:db8::abcd", true),
+            "match forces filter off"
+        );
+    }
+
+    #[test]
+    fn filter_aaaa_unset_rule_inherits_global() {
+        // A block/allow rule with no filter_aaaa key must not force-disable.
+        let set = policy(&[cfg(&["10.0.0.0/8"], &["ads.example"], &[])]);
+        assert!(eff(&set, "10.0.0.5", true), "unset inherits global true");
+        assert!(!eff(&set, "10.0.0.5", false), "unset inherits global false");
+    }
+
+    #[test]
+    fn filter_aaaa_first_explicit_override_wins() {
+        let set = policy(&[
+            cfg(&["10.0.0.0/8"], &["ads.example"], &[]), // matches, silent on aaaa
+            cfg_aaaa(&["10.0.0.0/8"], Some(true)),       // first explicit override
+        ]);
+        assert!(eff(&set, "10.0.0.5", false), "first explicit override wins");
+    }
+
+    #[test]
+    fn filter_aaaa_loopback_inherits_global() {
+        let set = policy(&[cfg_aaaa(&["127.0.0.0/8"], Some(true))]);
+        for peer in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+            assert!(!eff(&set, peer, false), "{peer} bypasses to global");
+        }
+    }
+
+    #[test]
+    fn filter_aaaa_dual_stack_mapped_peer_matches_v4_rule() {
+        let set = policy(&[cfg_aaaa(&["10.210.0.0/16"], Some(true))]);
+        assert!(eff(&set, "::ffff:10.210.0.5", false), "v4-mapped matches");
+    }
+
+    #[test]
+    fn filter_aaaa_only_rule_is_accepted() {
+        // No block/allow domains, just a filter_aaaa override → valid.
+        assert!(ClientPolicySet::from_configs(&[cfg_aaaa(&["10.0.0.0/8"], Some(true))]).is_ok());
+    }
+
+    #[test]
+    fn rule_with_nothing_is_rejected() {
+        // No block, no allow, no filter_aaaa → still an error.
+        let err = ClientPolicySet::from_configs(&[cfg_aaaa(&["10.0.0.0/8"], None)]).unwrap_err();
+        assert!(err.contains("filter_aaaa"), "got: {err}");
+    }
+
+    #[test]
+    fn filter_aaaa_only_rule_still_requires_from() {
+        let mut c = cfg_aaaa(&[], Some(true));
+        c.from.clear();
+        let err = ClientPolicySet::from_configs(&[c]).unwrap_err();
+        assert!(err.contains("at least one CIDR"), "got: {err}");
     }
 }
