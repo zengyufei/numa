@@ -23,9 +23,8 @@ pub struct ClientPolicyConfig {
     pub block: Vec<String>,
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Per-client override of `[server].filter_aaaa`. `None` (unset) inherits
-    /// the global default; `Some` forces AAAA filtering on/off for this rule's
-    /// clients (issue #286).
+    /// Per-client override of `[server].filter_aaaa`; `None` inherits the
+    /// global default (issue #286).
     #[serde(default)]
     pub filter_aaaa: Option<bool>,
 }
@@ -119,9 +118,7 @@ impl ClientPolicySet {
         Decision::Passthrough
     }
 
-    /// Effective `filter_aaaa` for `peer`: the first matching rule that sets an
-    /// explicit override wins; otherwise the global `[server].filter_aaaa`
-    /// default applies.
+    /// First matching rule with an explicit override wins; else `global`.
     pub fn effective_filter_aaaa(&self, peer: IpAddr, global: bool) -> bool {
         self.matching_rules(peer)
             .find_map(|rule| rule.filter_aaaa)
