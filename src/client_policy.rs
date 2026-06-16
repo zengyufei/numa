@@ -23,8 +23,6 @@ pub struct ClientPolicyConfig {
     pub block: Vec<String>,
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Per-client override of `[server].filter_aaaa`; `None` inherits the
-    /// global default (issue #286).
     #[serde(default)]
     pub filter_aaaa: Option<bool>,
 }
