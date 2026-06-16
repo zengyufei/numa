@@ -91,21 +91,23 @@ impl ClientPolicySet {
         self.rules.len()
     }
 
+    /// Rules matching `peer`, in declaration order. Canonicalizes so the
+    /// loopback bypass also covers `::ffff:127.0.0.1` from a dual-stack bind;
+    /// loopback (and an empty rule set) yields nothing, so a stub resolver on
+    /// the same host never reaches the matcher and cannot be filtered.
+    fn matching_rules(&self, peer: IpAddr) -> impl Iterator<Item = &ClientPolicy> {
+        let peer = peer.to_canonical();
+        let bypass = self.rules.is_empty() || peer.is_loopback();
+        self.rules
+            .iter()
+            .filter(move |rule| !bypass && rule.nets.matches(peer))
+    }
+
     /// Rules layer in declaration order: the first rule with an explicit
     /// Block/Allow for `qname` wins; a client-matching rule silent on `qname`
     /// falls through to the next. Within a rule, allow beats block.
     pub fn evaluate(&self, peer: IpAddr, qname: &str) -> Decision {
-        // Canonicalize so the loopback bypass also covers `::ffff:127.0.0.1`
-        // from a dual-stack bind. Loopback wins over any `exclude` — a loopback
-        // peer never reaches the matcher, so it cannot be filtered.
-        let peer = peer.to_canonical();
-        if self.rules.is_empty() || peer.is_loopback() {
-            return Decision::Passthrough;
-        }
-        for rule in &self.rules {
-            if !rule.nets.matches(peer) {
-                continue;
-            }
+        for rule in self.matching_rules(peer) {
             let r = rule.store.check(qname);
             if r.blocked {
                 return Decision::Block;
@@ -118,22 +120,12 @@ impl ClientPolicySet {
     }
 
     /// Effective `filter_aaaa` for `peer`: the first matching rule that sets an
-    /// explicit override wins (declaration order, mirroring `evaluate`);
-    /// otherwise the global `[server].filter_aaaa` default applies. Loopback
-    /// bypasses the per-client path and keeps the global value.
+    /// explicit override wins; otherwise the global `[server].filter_aaaa`
+    /// default applies.
     pub fn effective_filter_aaaa(&self, peer: IpAddr, global: bool) -> bool {
-        let peer = peer.to_canonical();
-        if self.rules.is_empty() || peer.is_loopback() {
-            return global;
-        }
-        for rule in &self.rules {
-            if rule.nets.matches(peer) {
-                if let Some(v) = rule.filter_aaaa {
-                    return v;
-                }
-            }
-        }
-        global
+        self.matching_rules(peer)
+            .find_map(|rule| rule.filter_aaaa)
+            .unwrap_or(global)
     }
 }
 
