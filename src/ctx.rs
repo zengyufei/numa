@@ -166,7 +166,10 @@ pub async fn resolve_query(
         stripped > 0
     };
 
-    shape_response_for_client(&mut response, &query, ctx.filter_aaaa);
+    let filter_aaaa = ctx
+        .client_policy
+        .effective_filter_aaaa(src_addr.ip(), ctx.filter_aaaa);
+    shape_response_for_client(&mut response, &query, filter_aaaa);
 
     let elapsed = start.elapsed();
 
@@ -187,7 +190,7 @@ pub async fn resolve_query(
         response.resources.len(),
     );
 
-    let resp_buffer = serialize_with_fallback(&mut response, &query, &qname, ctx.filter_aaaa)?;
+    let resp_buffer = serialize_with_fallback(&mut response, &query, &qname, filter_aaaa)?;
 
     // Record stats and query log
     {
@@ -387,7 +390,11 @@ fn resolve_local(
         ));
         return Some((resp, QueryPath::Blocked, DnssecStatus::Indeterminate));
     }
-    if qtype == QueryType::AAAA && ctx.filter_aaaa {
+    if qtype == QueryType::AAAA
+        && ctx
+            .client_policy
+            .effective_filter_aaaa(src_addr.ip(), ctx.filter_aaaa)
+    {
         // RFC 2308 NODATA: NOERROR with empty answer section. Prevents
         // Happy Eyeballs clients from waiting on an AAAA they'll never use
         // on IPv4-only networks.
@@ -2040,6 +2047,81 @@ mod tests {
 
         let (_, path) = resolve_in_test(&ctx, "ads.tracker.test", QueryType::A).await;
         assert_eq!(path, QueryPath::Blocked, "global blocklist still applies");
+    }
+
+    fn ctx_with_aaaa_policy(
+        from: &[&str],
+        filter_aaaa: Option<bool>,
+    ) -> crate::client_policy::ClientPolicySet {
+        crate::client_policy::ClientPolicySet::from_configs(&[
+            crate::client_policy::ClientPolicyConfig {
+                from: from.iter().map(|s| s.to_string()).collect(),
+                filter_aaaa,
+                ..Default::default()
+            },
+        ])
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pipeline_per_client_filter_aaaa_strips_for_matched_peer() {
+        // Global filter off, but the rule forces it on for this CIDR (#286).
+        let mut ctx = crate::testutil::test_ctx().await;
+        ctx.filter_aaaa = false;
+        ctx.client_policy = ctx_with_aaaa_policy(&["10.210.0.0/16"], Some(true));
+        let ctx = Arc::new(ctx);
+
+        let src: SocketAddr = "10.210.0.5:5000".parse().unwrap();
+        let (resp, path) = resolve_from_src(&ctx, src, "example.com", QueryType::AAAA).await;
+        assert_eq!(path, QueryPath::Local);
+        assert_eq!(resp.header.rescode, ResultCode::NOERROR);
+        assert!(resp.answers.is_empty(), "matched peer AAAA must be NODATA");
+    }
+
+    /// AAAA answers a peer receives when an upstream returns one record, under
+    /// the given global flag and single `filter_aaaa` rule. 0 = stripped.
+    async fn aaaa_answers(global: bool, rule: &[&str], ovr: Option<bool>, peer: &str) -> usize {
+        let upstream_resp = crate::testutil::aaaa_record_response(
+            "example.com",
+            "2001:db8::1".parse().unwrap(),
+            300,
+        );
+        let upstream_addr = crate::testutil::mock_upstream(upstream_resp).await;
+
+        let mut ctx = crate::testutil::test_ctx().await;
+        ctx.filter_aaaa = global;
+        ctx.client_policy = ctx_with_aaaa_policy(rule, ovr);
+        ctx.upstream_pool
+            .lock()
+            .unwrap()
+            .set_primary(vec![Upstream::Udp(upstream_addr)]);
+        let ctx = Arc::new(ctx);
+
+        let src: SocketAddr = peer.parse().unwrap();
+        resolve_from_src(&ctx, src, "example.com", QueryType::AAAA)
+            .await
+            .0
+            .answers
+            .len()
+    }
+
+    #[tokio::test]
+    async fn pipeline_per_client_filter_aaaa_spares_unmatched_peer() {
+        let n = aaaa_answers(false, &["10.210.0.0/16"], Some(true), "192.168.1.5:5000").await;
+        assert_eq!(n, 1, "unmatched peer keeps its AAAA");
+    }
+
+    #[tokio::test]
+    async fn pipeline_per_client_filter_aaaa_exempts_matched_peer_from_global() {
+        // Global filter on, rule carves out a v6-capable subnet (the inverse).
+        let n = aaaa_answers(
+            true,
+            &["2001:db8:cafe::/48"],
+            Some(false),
+            "[2001:db8:cafe::5]:5000",
+        )
+        .await;
+        assert_eq!(n, 1, "exempt peer keeps its AAAA");
     }
 
     #[tokio::test]

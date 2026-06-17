@@ -113,6 +113,19 @@ pub fn a_record_response(domain: &str, addr: Ipv4Addr, ttl: u32) -> DnsPacket {
     pkt
 }
 
+/// AAAA counterpart of `a_record_response`, for filter_aaaa pipeline tests.
+pub fn aaaa_record_response(domain: &str, addr: std::net::Ipv6Addr, ttl: u32) -> DnsPacket {
+    let mut pkt = DnsPacket::new();
+    pkt.header.response = true;
+    pkt.header.rescode = ResultCode::NOERROR;
+    pkt.answers.push(DnsRecord::AAAA {
+        domain: domain.to_string(),
+        addr,
+        ttl,
+    });
+    pkt
+}
+
 /// Spawn a UDP socket that replies to the first DNS query with the given
 /// response packet (patching the query ID to match). Returns the socket address.
 pub async fn mock_upstream(response: DnsPacket) -> SocketAddr {
