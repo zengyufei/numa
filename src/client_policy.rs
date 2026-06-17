@@ -369,28 +369,28 @@ mod tests {
     }
 
     #[test]
-    fn filter_aaaa_inherits_global_when_no_rule_matches() {
-        let set = policy(&[cfg_aaaa(&["10.210.0.0/16"], Some(true))]);
-        assert!(
-            !eff(&set, "192.168.1.5", false),
-            "unmatched inherits global"
-        );
-        assert!(eff(&set, "192.168.1.5", true), "unmatched inherits global");
-    }
-
-    #[test]
-    fn filter_aaaa_override_forces_on_over_global_false() {
-        let set = policy(&[cfg_aaaa(&["10.210.0.0/16"], Some(true))]);
-        assert!(eff(&set, "10.210.0.5", false), "match forces filter on");
-    }
-
-    #[test]
-    fn filter_aaaa_override_forces_off_over_global_true() {
-        let set = policy(&[cfg_aaaa(&["2001:db8::/32"], Some(false))]);
-        assert!(
-            !eff(&set, "2001:db8::abcd", true),
-            "match forces filter off"
-        );
+    fn effective_filter_aaaa_matrix() {
+        // (rule cidr, override, peer, global) -> expected effective filter.
+        let cases: &[(&str, Option<bool>, &str, bool, bool)] = &[
+            ("10.210.0.0/16", Some(true), "192.168.1.5", false, false), // unmatched inherits global
+            ("10.210.0.0/16", Some(true), "192.168.1.5", true, true),   // unmatched inherits global
+            ("10.210.0.0/16", Some(true), "10.210.0.5", false, true), // match forces on over global off
+            ("2001:db8::/32", Some(false), "2001:db8::abcd", true, false), // match forces off over global on
+            (
+                "10.210.0.0/16",
+                Some(true),
+                "::ffff:10.210.0.5",
+                false,
+                true,
+            ), // v4-mapped matches v4 rule
+            ("127.0.0.0/8", Some(true), "127.0.0.1", false, false), // loopback bypasses to global
+            ("127.0.0.0/8", Some(true), "::1", false, false),       // loopback bypasses to global
+            ("127.0.0.0/8", Some(true), "::ffff:127.0.0.1", false, false), // loopback bypasses to global
+        ];
+        for (cidr, ovr, peer, global, want) in cases {
+            let set = policy(&[cfg_aaaa(&[cidr], *ovr)]);
+            assert_eq!(eff(&set, peer, *global), *want, "{peer} global={global}");
+        }
     }
 
     #[test]
@@ -408,20 +408,6 @@ mod tests {
             cfg_aaaa(&["10.0.0.0/8"], Some(true)),       // first explicit override
         ]);
         assert!(eff(&set, "10.0.0.5", false), "first explicit override wins");
-    }
-
-    #[test]
-    fn filter_aaaa_loopback_inherits_global() {
-        let set = policy(&[cfg_aaaa(&["127.0.0.0/8"], Some(true))]);
-        for peer in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
-            assert!(!eff(&set, peer, false), "{peer} bypasses to global");
-        }
-    }
-
-    #[test]
-    fn filter_aaaa_dual_stack_mapped_peer_matches_v4_rule() {
-        let set = policy(&[cfg_aaaa(&["10.210.0.0/16"], Some(true))]);
-        assert!(eff(&set, "::ffff:10.210.0.5", false), "v4-mapped matches");
     }
 
     #[test]

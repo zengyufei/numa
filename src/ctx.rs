@@ -2078,8 +2078,9 @@ mod tests {
         assert!(resp.answers.is_empty(), "matched peer AAAA must be NODATA");
     }
 
-    #[tokio::test]
-    async fn pipeline_per_client_filter_aaaa_spares_unmatched_peer() {
+    /// AAAA answers a peer receives when an upstream returns one record, under
+    /// the given global flag and single `filter_aaaa` rule. 0 = stripped.
+    async fn aaaa_answers(global: bool, rule: &[&str], ovr: Option<bool>, peer: &str) -> usize {
         let upstream_resp = crate::testutil::aaaa_record_response(
             "example.com",
             "2001:db8::1".parse().unwrap(),
@@ -2088,41 +2089,39 @@ mod tests {
         let upstream_addr = crate::testutil::mock_upstream(upstream_resp).await;
 
         let mut ctx = crate::testutil::test_ctx().await;
-        ctx.filter_aaaa = false;
-        ctx.client_policy = ctx_with_aaaa_policy(&["10.210.0.0/16"], Some(true));
+        ctx.filter_aaaa = global;
+        ctx.client_policy = ctx_with_aaaa_policy(rule, ovr);
         ctx.upstream_pool
             .lock()
             .unwrap()
             .set_primary(vec![Upstream::Udp(upstream_addr)]);
         let ctx = Arc::new(ctx);
 
-        let src: SocketAddr = "192.168.1.5:5000".parse().unwrap();
-        let (resp, _) = resolve_from_src(&ctx, src, "example.com", QueryType::AAAA).await;
-        assert_eq!(resp.answers.len(), 1, "unmatched peer keeps its AAAA");
+        let src: SocketAddr = peer.parse().unwrap();
+        resolve_from_src(&ctx, src, "example.com", QueryType::AAAA)
+            .await
+            .0
+            .answers
+            .len()
+    }
+
+    #[tokio::test]
+    async fn pipeline_per_client_filter_aaaa_spares_unmatched_peer() {
+        let n = aaaa_answers(false, &["10.210.0.0/16"], Some(true), "192.168.1.5:5000").await;
+        assert_eq!(n, 1, "unmatched peer keeps its AAAA");
     }
 
     #[tokio::test]
     async fn pipeline_per_client_filter_aaaa_exempts_matched_peer_from_global() {
         // Global filter on, rule carves out a v6-capable subnet (the inverse).
-        let upstream_resp = crate::testutil::aaaa_record_response(
-            "example.com",
-            "2001:db8::1".parse().unwrap(),
-            300,
-        );
-        let upstream_addr = crate::testutil::mock_upstream(upstream_resp).await;
-
-        let mut ctx = crate::testutil::test_ctx().await;
-        ctx.filter_aaaa = true;
-        ctx.client_policy = ctx_with_aaaa_policy(&["2001:db8:cafe::/48"], Some(false));
-        ctx.upstream_pool
-            .lock()
-            .unwrap()
-            .set_primary(vec![Upstream::Udp(upstream_addr)]);
-        let ctx = Arc::new(ctx);
-
-        let src: SocketAddr = "[2001:db8:cafe::5]:5000".parse().unwrap();
-        let (resp, _) = resolve_from_src(&ctx, src, "example.com", QueryType::AAAA).await;
-        assert_eq!(resp.answers.len(), 1, "exempt peer keeps its AAAA");
+        let n = aaaa_answers(
+            true,
+            &["2001:db8:cafe::/48"],
+            Some(false),
+            "[2001:db8:cafe::5]:5000",
+        )
+        .await;
+        assert_eq!(n, 1, "exempt peer keeps its AAAA");
     }
 
     #[tokio::test]
