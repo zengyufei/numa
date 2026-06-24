@@ -202,6 +202,7 @@ pub async fn resolve_query(
     }
 
     ctx.query_log.lock().unwrap().push(QueryLogEntry {
+        seq: 0, // stamped by QueryLog::push
         timestamp: SystemTime::now(),
         src_addr,
         domain: qname,
