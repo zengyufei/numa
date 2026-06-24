@@ -165,6 +165,7 @@ struct QueryLogParams {
 
 #[derive(Serialize)]
 struct QueryLogResponse {
+    seq: u64,
     timestamp_epoch: f64,
     src: String,
     domain: String,
@@ -513,7 +514,6 @@ async fn query_log(
         domain: params.domain,
         query_type: qtype,
         path,
-        since: None,
         limit: params.limit,
     };
 
@@ -528,6 +528,7 @@ async fn query_log(
                     .unwrap_or_default()
                     .as_secs_f64();
                 QueryLogResponse {
+                    seq: e.seq,
                     timestamp_epoch: epoch,
                     src: e.src_addr.to_string(),
                     domain: e.domain.clone(),
