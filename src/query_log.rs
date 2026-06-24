@@ -105,19 +105,7 @@ mod tests {
     fn heap_bytes_grows_with_entries() {
         let mut log = QueryLog::new(100);
         let empty = log.heap_bytes();
-        log.push(QueryLogEntry {
-            seq: 0,
-            timestamp: SystemTime::now(),
-            src_addr: "127.0.0.1:1234".parse().unwrap(),
-            domain: "example.com".into(),
-            query_type: QueryType::A,
-            path: QueryPath::Forwarded,
-            transport: Transport::Udp,
-            rescode: ResultCode::NOERROR,
-            latency_us: 500,
-            dnssec: DnssecStatus::Indeterminate,
-            rebind_stripped: false,
-        });
+        log.push(entry("example.com"));
         assert!(log.heap_bytes() > empty);
     }
 
