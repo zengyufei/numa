@@ -164,6 +164,7 @@ Turnkey compose recipes:
 - [Blog: I Built a DNS Resolver from Scratch](https://numa.rs/blog/posts/dns-from-scratch.html)
 - [Configuration reference](numa.toml) — all options documented inline
 - [REST API](src/api.rs) — overrides, cache, blocking, services, diagnostics
+- [numa-metrics](https://github.com/razvandimescu/numa-metrics) — durable query history & analytics, off-host by design (no SD-card writes)
 
 ## Roadmap
 
