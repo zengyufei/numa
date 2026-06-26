@@ -1,189 +1,154 @@
-# Numa
+# Numa Dev DNS
 
-[![CI](https://github.com/razvandimescu/numa/actions/workflows/ci.yml/badge.svg)](https://github.com/razvandimescu/numa/actions)
-[![crates.io](https://img.shields.io/crates/v/numa.svg)](https://crates.io/crates/numa)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+English | [中文](README.zh.md)
 
-**DNS you own. Everywhere you go.** — [numa.rs](https://numa.rs)
+Numa Dev DNS is a Windows-only lightweight DNS profile for local development.
+It builds `numa-dev.exe`, a minimal DNS server that maps configured domains to
+IPv4 A records and lets Windows route those domains through it with NRPT rules.
 
-A portable DNS resolver in a single binary. Block ads on any network, name your local services (`frontend.numa`), override any hostname with auto-revert, and seal every outbound query with **ODoH (RFC 9230)** so no single party sees both who you are and what you asked — all from your laptop, no cloud account or Raspberry Pi required.
+This is not the full Numa resolver. It is a narrow developer tool for machines
+that need a few real hostnames to resolve to a local or LAN development IP.
 
-Built from scratch in Rust. Zero DNS libraries. Caching, ad blocking, and local service domains out of the box. Optional recursive resolution from root nameservers with full DNSSEC chain-of-trust validation, plus a DNS-over-TLS listener for encrypted client connections (iOS Private DNS, systemd-resolved, etc.). Run `numa relay` and the same binary becomes a public ODoH endpoint too — the curated DNSCrypt list currently has one surviving relay, so every Numa deploy materially expands the ecosystem. One ~8MB binary, everything embedded.
+## Features
 
-![Numa dashboard](assets/hero-demo.gif)
+- Exact domain to IPv4 A record mapping.
+- Windows NRPT rules for routing only configured domains to `numa-dev.exe`.
+- `dev-domains.txt` hot reload every 3 seconds.
+- Invalid domain file changes keep the last valid in-memory map.
+- Visible or hidden startup modes.
+- Hidden watchdog removes NRPT rules and flushes DNS after `numa-dev.exe` exits.
+- GitHub tag releases publish only the UPX-compressed `numa-dev.exe` asset.
 
-## Quick Start
+## Not Included
 
-```bash
-# macOS
-brew install razvandimescu/tap/numa
+`numa-dev.exe` intentionally does not include the full Numa feature set:
 
-# Linux
-curl -fsSL https://raw.githubusercontent.com/razvandimescu/numa/main/install.sh | sh
+- no Web UI
+- no HTTP API
+- no DoH or DoT
+- no TLS
+- no proxy
+- no DNSSEC
+- no recursive resolver
+- no service install
+- no ad blocking
+- no wildcard domains
+- no IPv6 records
 
-# Arch Linux
-pacman -S numa
+## Files
 
-# Windows — download from GitHub Releases
-# All platforms
-cargo install numa
+- `src/bin/numa-dev.rs`: minimal DNS server.
+- `dev-domains.txt`: domain to IPv4 mapping file.
+- `numa-dev-on.bat`: starts `numa-dev.exe` in a visible window and installs NRPT rules.
+- `numa-dev-on-hidden.bat`: starts `numa-dev.exe` hidden and writes logs under `ProgramData\numa-dev`.
+- `numa-dev-off.bat`: removes NRPT rules, flushes DNS, and stops `numa-dev.exe`.
+- `scripts/numa-dev-on.ps1`: elevated startup logic.
+- `scripts/numa-dev-off.ps1`: elevated cleanup logic.
+- `.github/workflows/release.yml`: tag-triggered Windows release workflow.
 
-# Docker
-docker run -d --name numa --network host ghcr.io/razvandimescu/numa
+## Domain File
 
-# Nix
-nix run github:razvandimescu/numa
+`dev-domains.txt` uses this format:
+
+```txt
+<ipv4> <domain> [domain...]
 ```
 
-```bash
-sudo numa                              # run in foreground (port 53 requires root/admin)
+Example:
+
+```txt
+192.168.0.103 api.synccopay.com pay.synccopay.com
+192.168.0.103 admin.synccopay.com
 ```
 
-Open the dashboard: **http://numa.numa** (or `http://localhost:5380`)
+Blank lines and `#` comments are ignored. Domains are normalized to lowercase
+and trailing dots are removed. Wildcards and IPv6 are rejected.
 
-Set as system DNS:
+The file is reloaded every 3 seconds. If a reload fails validation, the running
+process keeps using the previous valid mapping.
 
-| Platform | Install | Uninstall |
-|----------|---------|-----------|
-| macOS | `sudo numa install` | `sudo numa uninstall` |
-| Linux | `sudo numa install` | `sudo numa uninstall` |
-| Windows | `numa install` (admin) + reboot | `numa uninstall` (admin) + reboot |
+## Build
 
-On macOS and Linux, numa runs as a system service (launchd/systemd). On Windows, numa auto-starts on login via registry. Windows also binds `127.0.0.2:53` (the built-in Dnscache owns `127.0.0.1:53`) and installs an NRPT rule to route queries to it — so edit `bind_addr`/`api_bind_addr` against `127.0.0.2`, not `127.0.0.1`.
+Build the development DNS executable:
 
-## Local Services
-
-Name your dev services instead of remembering port numbers:
-
-```bash
-curl -X POST localhost:5380/services \
-  -d '{"name":"frontend","target_port":5173}'
+```powershell
+cargo build --release --bin numa-dev
 ```
 
-Now `https://frontend.numa` works in your browser — green lock, valid cert, WebSocket passthrough for HMR. No mkcert, no nginx, no `/etc/hosts`.
+The output is:
 
-Add path-based routing (`app.numa/api → :5001`), share services across machines via LAN discovery, or configure everything in [`numa.toml`](numa.toml).
-
-## Ad Blocking & Privacy
-
-385K+ domains blocked via [Hagezi Pro](https://github.com/hagezi/dns-blocklists). Works on any network — coffee shops, hotels, airports. Travels with your laptop.
-
-Three resolution modes:
-
-- **`forward`** (default) — transparent proxy to your existing system DNS. Everything works as before, just with caching and ad blocking on top. Captive portals, VPNs, corporate DNS — all respected.
-- **`recursive`** — resolve directly from root nameservers. No upstream dependency, no single entity sees your full query pattern. Add `[dnssec] enabled = true` for full chain-of-trust validation.
-- **`auto`** — probe root servers on startup, recursive if reachable, encrypted DoH fallback if blocked.
-
-DNSSEC validates the full chain of trust: RRSIG signatures, DNSKEY verification, DS delegation, NSEC/NSEC3 denial proofs. [Read how it works →](https://numa.rs/blog/posts/dnssec-from-scratch.html)
-
-**DNS-over-TLS listener** (RFC 7858) — accept encrypted queries on port 853 from strict clients like iOS Private DNS, systemd-resolved, or stubby. Two modes:
-
-- **Self-signed** (default) — numa generates a local CA automatically. `numa install` adds it to the system trust store on macOS, Linux (Debian/Ubuntu, Fedora/RHEL/SUSE, Arch), and Windows. On iOS, install the `.mobileconfig` from `numa setup-phone`. Firefox keeps its own NSS store and ignores the system one — trust the CA there manually if you need HTTPS for `.numa` services in Firefox.
-- **Bring-your-own cert** — point `[dot] cert_path` / `key_path` at a publicly-trusted cert (e.g., Let's Encrypt via DNS-01 challenge on a domain pointing at your numa instance). Clients connect without any trust-store setup — same UX as AdGuard Home or Cloudflare `1.1.1.1`.
-
-ALPN `"dot"` is advertised and enforced in both modes; a handshake with mismatched ALPN is rejected as a cross-protocol confusion defense.
-
-**Phone setup** — point your iPhone or Android at Numa in one step:
-
-```bash
-numa setup-phone
+```text
+target\release\numa-dev.exe
 ```
 
-Prints a QR code. Scan it, install the profile, toggle certificate trust — your phone's DNS now routes through Numa over TLS. Requires `[mobile] enabled = true` in `numa.toml`.
+## Usage
 
-## LAN Discovery
+Start with a visible console:
 
-Run Numa on multiple machines. They find each other automatically via mDNS:
-
-```
-Machine A (192.168.1.5)              Machine B (192.168.1.20)
-┌──────────────────────┐             ┌──────────────────────┐
-│ Numa                 │    mDNS     │ Numa                 │
-│  - api (port 8000)   │◄───────────►│  - grafana (3000)    │
-│  - frontend (5173)   │  discovery  │                      │
-└──────────────────────┘             └──────────────────────┘
+```bat
+numa-dev-on.bat
 ```
 
-From Machine B: `curl http://api.numa` → proxied to Machine A's port 8000. Enable with `numa lan on`.
+Start hidden:
 
-**Hub mode**: run one instance with `bind_addr = "0.0.0.0:53"` and point other devices' DNS to it — they get ad blocking + `.numa` resolution without installing anything. `bind_addr` also accepts a list to bind a specific subset of interfaces.
-
-## Docker
-
-```bash
-# Recommended — host networking (Linux)
-docker run -d --name numa --network host ghcr.io/razvandimescu/numa
-
-# Port mapping (macOS/Windows Docker Desktop)
-docker run -d --name numa -p 53:53/udp -p 53:53/tcp -p 5380:5380 ghcr.io/razvandimescu/numa
+```bat
+numa-dev-on-hidden.bat
 ```
 
-Dashboard at `http://localhost:5380`. The image binds the API and proxy to `0.0.0.0` by default. Override with a custom config:
+Stop and restore Windows DNS routing:
 
-```bash
-docker run -d --name numa --network host \
-  -v /path/to/numa.toml:/root/.config/numa/numa.toml \
-  ghcr.io/razvandimescu/numa
+```bat
+numa-dev-off.bat
 ```
 
-Multi-arch: `linux/amd64` and `linux/arm64`.
+The start scripts request Administrator permission because binding port 53 and
+changing Windows NRPT rules require elevation.
 
-Turnkey compose recipes:
-- [`packaging/client/`](packaging/client/) — ODoH client mode (anonymous DNS), Numa + starter `numa.toml`.
-- [`packaging/relay/`](packaging/relay/) — public ODoH relay, Numa + Caddy + ACME.
+Direct run without NRPT setup:
 
-## How It Compares
+```powershell
+.\target\release\numa-dev.exe --domains dev-domains.txt --bind 127.0.0.2:53 --ttl 60
+```
 
-| | Pi-hole | AdGuard Home | Unbound | Numa |
-|---|---|---|---|---|
-| Local service proxy + auto TLS | — | — | — | `.numa` domains, HTTPS, WebSocket |
-| LAN service discovery | — | — | — | mDNS, zero config |
-| Developer overrides (REST API) | — | — | — | Auto-revert, scriptable |
-| Recursive resolver | — | — | Yes | Yes, with SRTT selection |
-| DNSSEC validation | — | — | Yes | Yes (RSA, ECDSA, Ed25519) |
-| Ad blocking | Yes | Yes | — | 385K+ domains |
-| Web admin UI | Full | Full | — | Dashboard |
-| Encrypted upstream (DoH/DoT) | Needs cloudflared | DoH only | DoT only | DoH + DoT (`tls://`) |
-| Encrypted clients (DoT listener) | Needs stunnel sidecar | Yes | Yes | Native (RFC 7858) |
-| DoH server endpoint | — | Yes | — | Yes (RFC 8484) |
-| Request hedging | — | — | — | All protocols (UDP, DoH, DoT) |
-| Serve-stale + prefetch | — | — | Prefetch at 90% TTL | RFC 8767, prefetch at 90% TTL |
-| Conditional forwarding | — | Yes | Yes | Yes (per-suffix rules) |
-| Portable (laptop) | No (appliance) | No (appliance) | Server | Single binary, macOS/Linux/Windows |
-| Community maturity | 56K stars, 10 years | 33K stars | 20 years | New |
+## How Windows Routing Works
 
-## Performance
+Windows owns `127.0.0.1:53`, so this tool listens on `127.0.0.2:53` by default.
+The startup script reads `dev-domains.txt`, adds NRPT rules for those domains,
+and tells Windows to send matching DNS queries to `127.0.0.2`.
 
-0.1ms cached queries — matches Unbound and AdGuard Home. Wire-level cache stores raw bytes with in-place TTL patching. Request hedging eliminates p99 spikes: cold recursive p99 538ms vs Unbound 748ms (−28%), σ 4× tighter. [Benchmarks →](benches/)
+Only the configured domains are routed through `numa-dev.exe`; other domains
+continue using the machine's normal DNS settings.
 
-## Learn More
+## Recovery
 
-- [Blog: Numa as your tailnet resolver](https://numa.rs/blog/posts/numa-tailnet-resolver.html)
-- [Blog: DNS-over-TLS from Scratch in Rust](https://numa.rs/blog/posts/dot-from-scratch.html)
-- [Blog: Implementing DNSSEC from Scratch in Rust](https://numa.rs/blog/posts/dnssec-from-scratch.html)
-- [Blog: I Built a DNS Resolver from Scratch](https://numa.rs/blog/posts/dns-from-scratch.html)
-- [Configuration reference](numa.toml) — all options documented inline
-- [REST API](src/api.rs) — overrides, cache, blocking, services, diagnostics
-- [numa-metrics](https://github.com/razvandimescu/numa-metrics) — durable query history & analytics, off-host by design (no SD-card writes)
+If `numa-dev.exe` is closed directly, the hidden watchdog removes the NRPT rules
+and flushes DNS automatically.
 
-## Roadmap
+If both the server and watchdog are killed, run:
 
-- [x] DNS forwarding, caching, ad blocking, developer overrides
-- [x] `.numa` local domains — auto TLS, path routing, WebSocket proxy
-- [x] LAN service discovery — mDNS, cross-machine DNS + proxy
-- [x] DNS-over-HTTPS — encrypted upstream + server endpoint (RFC 8484)
-- [x] DNS-over-TLS — encrypted client listener (RFC 7858) + upstream forwarding (`tls://`)
-- [x] Oblivious DoH — anonymized client mode + public relay (`numa relay`, RFC 9230)
-- [x] Recursive resolution + DNSSEC — chain-of-trust, NSEC/NSEC3
-- [x] SRTT-based nameserver selection
-- [x] Multi-forwarder failover — multiple upstreams with SRTT ranking, fallback pool
-- [x] Request hedging — parallel requests rescue packet loss and tail latency (all protocols)
-- [x] Serve-stale + prefetch — RFC 8767, background refresh at <10% TTL and on stale serve
-- [x] Conditional forwarding — per-suffix rules for split-horizon DNS (Tailscale, VPNs)
-- [x] Cache warming — proactive resolution for configured domains
-- [x] Mobile onboarding — `setup-phone` QR flow, mobile API, mobileconfig profiles
-- [ ] pkarr integration — self-sovereign DNS via Mainline DHT
-- [ ] Global `.numa` names — DHT-backed, no registrar
+```bat
+numa-dev-off.bat
+```
+
+That removes the `numa-dev-domain-profile` NRPT rules, flushes DNS, and stops
+remaining `numa-dev` processes.
+
+## Release
+
+Pushing any tag triggers the GitHub Actions release workflow:
+
+```powershell
+git tag dev-v0.1.0
+git push origin dev-v0.1.0
+```
+
+The workflow builds on `windows-latest`, runs `cargo test --locked --bin
+numa-dev`, builds `cargo build --release --locked --bin numa-dev`, compresses
+the executable with UPX, and uploads `numa-dev.exe` directly to the tag's GitHub
+Release.
+
+The release asset is the executable itself, not a `.zip`, `.tar.gz`, or other
+archive.
 
 ## License
 
