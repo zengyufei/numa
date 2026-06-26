@@ -6,6 +6,10 @@ Numa Dev DNS is a Windows-only lightweight DNS profile for local development.
 It builds `numa-dev.exe`, a minimal DNS server that maps configured domains to
 IPv4 A records and lets Windows route those domains through it with NRPT rules.
 
+`numa-dev` is a lightweight local DNS tool for Windows. After startup, it
+automatically adds NRPT rules to replace editing the hosts file, so configured
+domains resolve to development environment IP addresses.
+
 This is not the full Numa resolver. It is a narrow developer tool for machines
 that need a few real hostnames to resolve to a local or LAN development IP.
 
