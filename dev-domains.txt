@@ -1,0 +1,20 @@
+# Dev DNS profile for Numa.
+#
+# Format:
+#   <ip> <domain> [domain...]
+#
+# Examples:
+#   192.168.0.103 api.synccopay.com pay.synccopay.com
+#
+# numa-dev.exe intentionally supports exact IPv4 domains only.
+
+
+192.168.0.103 manage.synccopay.com
+192.168.0.103 user.synccopay.com
+192.168.0.103 api.synccopay.com
+192.168.0.103 pay.synccopay.com
+192.168.0.103 payuser.synccopay.com
+192.168.0.103 doc.synccopay.com
+192.168.0.103 mall.synccopay.com
+192.168.0.103 m1774429001.synccopay.com
+192.168.0.103 m1774429001-1.synccopay.com
