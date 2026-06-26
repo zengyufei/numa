@@ -50,6 +50,19 @@ pub fn router(ctx: Arc<ServerCtx>) -> Router {
             "/blocking/allowlist/{domain}",
             delete(blocking_allowlist_remove),
         )
+        .route("/blocking/blocklist", get(blocking_blocklist))
+        .route("/blocking/blocklist", post(blocking_blocklist_add))
+        .route(
+            "/blocking/blocklist/{domain}",
+            delete(blocking_blocklist_remove),
+        )
+        .route("/rebind", get(rebind_status))
+        .route("/rebind/toggle", put(rebind_toggle))
+        .route("/rebind/allowlist", post(rebind_allowlist_add))
+        .route(
+            "/rebind/allowlist/{domain}",
+            delete(rebind_allowlist_remove),
+        )
         .route("/services", get(list_services))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
@@ -152,6 +165,7 @@ struct QueryLogParams {
 
 #[derive(Serialize)]
 struct QueryLogResponse {
+    seq: u64,
     timestamp_epoch: f64,
     src: String,
     domain: String,
@@ -161,6 +175,7 @@ struct QueryLogResponse {
     rescode: String,
     latency_ms: f64,
     dnssec: String,
+    rebind_stripped: bool,
 }
 
 #[derive(Serialize)]
@@ -174,6 +189,7 @@ struct StatsResponse {
     proxy_tld: String,
     dnssec: bool,
     srtt: bool,
+    rebind: bool,
     queries: QueriesStats,
     transport: TransportStats,
     upstream_transport: UpstreamTransportStats,
@@ -236,6 +252,7 @@ struct QueriesStats {
     overridden: u64,
     blocked: u64,
     errors: u64,
+    rebind_stripped: u64,
 }
 
 #[derive(Serialize)]
@@ -497,7 +514,6 @@ async fn query_log(
         domain: params.domain,
         query_type: qtype,
         path,
-        since: None,
         limit: params.limit,
     };
 
@@ -512,6 +528,7 @@ async fn query_log(
                     .unwrap_or_default()
                     .as_secs_f64();
                 QueryLogResponse {
+                    seq: e.seq,
                     timestamp_epoch: epoch,
                     src: e.src_addr.to_string(),
                     domain: e.domain.clone(),
@@ -521,6 +538,7 @@ async fn query_log(
                     rescode: e.rescode.as_str().to_string(),
                     latency_ms: e.latency_us as f64 / 1000.0,
                     dnssec: e.dnssec.as_str().to_string(),
+                    rebind_stripped: e.rebind_stripped,
                 }
             })
             .collect()
@@ -571,6 +589,7 @@ async fn stats(State(ctx): State<Arc<ServerCtx>>) -> Json<StatsResponse> {
         proxy_tld: ctx.proxy_tld.clone(),
         dnssec: ctx.dnssec_enabled,
         srtt: srtt_enabled,
+        rebind: ctx.rebind.read().unwrap().is_enabled(),
         queries: QueriesStats {
             total: snap.total,
             forwarded: snap.forwarded,
@@ -582,6 +601,7 @@ async fn stats(State(ctx): State<Arc<ServerCtx>>) -> Json<StatsResponse> {
             overridden: snap.overridden,
             blocked: snap.blocked,
             errors: snap.errors,
+            rebind_stripped: snap.rebind_stripped,
         },
         transport: TransportStats {
             udp: snap.transport_udp,
@@ -769,6 +789,91 @@ async fn blocking_allowlist_remove(
         .unwrap()
         .remove_from_allowlist(&domain)
     {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+async fn blocking_blocklist(State(ctx): State<Arc<ServerCtx>>) -> Json<Vec<String>> {
+    let list = ctx.blocklist.read().unwrap().manual_blocklist();
+    Json(list)
+}
+
+async fn blocking_blocklist_add(
+    State(ctx): State<Arc<ServerCtx>>,
+    Json(req): Json<AllowlistRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    ctx.blocklist.write().unwrap().add_to_blocklist(&req.domain);
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "blocked": req.domain })),
+    )
+}
+
+async fn blocking_blocklist_remove(
+    State(ctx): State<Arc<ServerCtx>>,
+    Path(domain): Path<String>,
+) -> StatusCode {
+    if ctx
+        .blocklist
+        .write()
+        .unwrap()
+        .remove_from_blocklist(&domain)
+    {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+// --- DNS rebinding-protection handlers ---
+
+#[derive(Serialize)]
+struct RebindResponse {
+    enabled: bool,
+    ranges: Vec<String>,
+    allowlist: Vec<String>,
+}
+
+async fn rebind_status(State(ctx): State<Arc<ServerCtx>>) -> Json<RebindResponse> {
+    let r = ctx.rebind.read().unwrap();
+    Json(RebindResponse {
+        enabled: r.is_enabled(),
+        ranges: r.ranges().to_vec(),
+        allowlist: r.allowlist(),
+    })
+}
+
+#[derive(Deserialize)]
+struct RebindToggleRequest {
+    enabled: bool,
+}
+
+async fn rebind_toggle(
+    State(ctx): State<Arc<ServerCtx>>,
+    Json(req): Json<RebindToggleRequest>,
+) -> Json<serde_json::Value> {
+    ctx.rebind.write().unwrap().set_enabled(req.enabled);
+    Json(serde_json::json!({ "enabled": req.enabled }))
+}
+
+async fn rebind_allowlist_add(
+    State(ctx): State<Arc<ServerCtx>>,
+    Json(req): Json<AllowlistRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    ctx.rebind.write().unwrap().add_to_allowlist(&req.domain);
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "allowed": req.domain })),
+    )
+}
+
+async fn rebind_allowlist_remove(
+    State(ctx): State<Arc<ServerCtx>>,
+    Path(domain): Path<String>,
+) -> StatusCode {
+    if ctx.rebind.write().unwrap().remove_from_allowlist(&domain) {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND

@@ -163,7 +163,8 @@ Turnkey compose recipes:
 - [Blog: Implementing DNSSEC from Scratch in Rust](https://numa.rs/blog/posts/dnssec-from-scratch.html)
 - [Blog: I Built a DNS Resolver from Scratch](https://numa.rs/blog/posts/dns-from-scratch.html)
 - [Configuration reference](numa.toml) — all options documented inline
-- [REST API](src/api.rs) — 27 endpoints across overrides, cache, blocking, services, diagnostics
+- [REST API](src/api.rs) — overrides, cache, blocking, services, diagnostics
+- [numa-metrics](https://github.com/razvandimescu/numa-metrics) — durable query history & analytics, off-host by design (no SD-card writes)
 
 ## Roadmap
 
@@ -172,6 +173,7 @@ Turnkey compose recipes:
 - [x] LAN service discovery — mDNS, cross-machine DNS + proxy
 - [x] DNS-over-HTTPS — encrypted upstream + server endpoint (RFC 8484)
 - [x] DNS-over-TLS — encrypted client listener (RFC 7858) + upstream forwarding (`tls://`)
+- [x] Oblivious DoH — anonymized client mode + public relay (`numa relay`, RFC 9230)
 - [x] Recursive resolution + DNSSEC — chain-of-trust, NSEC/NSEC3
 - [x] SRTT-based nameserver selection
 - [x] Multi-forwarder failover — multiple upstreams with SRTT ranking, fallback pool
