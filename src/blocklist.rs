@@ -475,7 +475,7 @@ pub async fn download_blocklists(
     lists: &[String],
     resolver: Option<std::sync::Arc<crate::bootstrap_resolver::NumaResolver>>,
 ) -> Vec<(String, String)> {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::forward::numa_tls_builder()
         .timeout(Duration::from_secs(30))
         .gzip(true);
     if let Some(r) = resolver {
@@ -622,7 +622,7 @@ mod retry_tests {
         let body = "ads.example.com\ntracker.example.net\n";
         let delays = zero_delays();
         let addr = flaky_http_server(delays.len(), body).await;
-        let client = reqwest::Client::new();
+        let client = crate::forward::default_client();
         let url = format!("http://{addr}/");
         let result = fetch_with_retry_delays(&client, &url, &delays).await;
         assert_eq!(result.as_deref(), Some(body));
@@ -683,7 +683,7 @@ mod retry_tests {
     async fn retry_gives_up_when_all_attempts_fail() {
         let delays = zero_delays();
         let addr = flaky_http_server(delays.len() + 2, "unreachable").await;
-        let client = reqwest::Client::new();
+        let client = crate::forward::default_client();
         let url = format!("http://{addr}/");
         let result = fetch_with_retry_delays(&client, &url, &delays).await;
         assert_eq!(result, None);

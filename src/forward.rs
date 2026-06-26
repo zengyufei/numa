@@ -213,9 +213,31 @@ pub fn build_https_client_with_resolver(
     builder.build().unwrap_or_default()
 }
 
-fn https_client_builder(pool_max_idle_per_host: usize) -> reqwest::ClientBuilder {
+/// The single place Numa configures reqwest TLS. Installs the ring
+/// `CryptoProvider` (reqwest 0.13's `rustls-no-provider` ships none, so a
+/// `Client` built without it panics; ring not aws-lc-rs keeps the armv6
+/// cross-build) and pins validation to the bundled Mozilla roots, skipping
+/// reqwest's default system-cert verifier (absent in the nix sandbox, a
+/// liability for the static Pi binary; also restores Numa's 0.12 behaviour).
+pub(crate) fn numa_tls_builder() -> reqwest::ClientBuilder {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let roots = webpki_root_certs::TLS_SERVER_ROOT_CERTS
+        .iter()
+        .filter_map(|der| reqwest::Certificate::from_der(der).ok());
     reqwest::Client::builder()
         .use_rustls_tls()
+        .tls_certs_only(roots)
+}
+
+/// `Client::new()` for tests, but with Numa's TLS setup so it builds regardless
+/// of test order or a missing system cert store.
+#[cfg(test)]
+pub(crate) fn default_client() -> reqwest::Client {
+    numa_tls_builder().build().unwrap_or_default()
+}
+
+fn https_client_builder(pool_max_idle_per_host: usize) -> reqwest::ClientBuilder {
+    numa_tls_builder()
         .http2_initial_stream_window_size(65_535)
         .http2_initial_connection_window_size(65_535)
         .http2_keep_alive_interval(Duration::from_secs(15))
@@ -228,7 +250,7 @@ fn https_client_builder(pool_max_idle_per_host: usize) -> reqwest::ClientBuilder
 fn build_dot_connector() -> Result<tokio_rustls::TlsConnector> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut root_store = rustls::RootCertStore::empty();
-    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    root_store.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
@@ -625,7 +647,7 @@ mod tests {
     fn upstream_display_doh() {
         let u = Upstream::Doh {
             url: "https://dns.quad9.net/dns-query".to_string(),
-            client: reqwest::Client::new(),
+            client: crate::forward::default_client(),
         };
         assert_eq!(u.to_string(), "https://dns.quad9.net/dns-query");
     }
@@ -680,7 +702,7 @@ mod tests {
 
         let upstream = Upstream::Doh {
             url: format!("http://{}/dns-query", addr),
-            client: reqwest::Client::new(),
+            client: crate::forward::default_client(),
         };
 
         let result = forward_query(&query, &upstream, Duration::from_secs(2))
@@ -719,7 +741,7 @@ mod tests {
 
         let upstream = Upstream::Doh {
             url: format!("http://{}/dns-query", addr),
-            client: reqwest::Client::new(),
+            client: crate::forward::default_client(),
         };
 
         let result = forward_query(&make_query(), &upstream, Duration::from_secs(2)).await;
@@ -742,7 +764,7 @@ mod tests {
 
         let upstream = Upstream::Doh {
             url: format!("http://{}/dns-query", addr),
-            client: reqwest::Client::new(),
+            client: crate::forward::default_client(),
         };
 
         let result = forward_query(&make_query(), &upstream, Duration::from_millis(100)).await;
@@ -829,7 +851,7 @@ mod tests {
             vec![Upstream::Udp(bad_udp_addr)],
             vec![Upstream::Doh {
                 url: format!("http://{}/dns-query", doh_addr),
-                client: reqwest::Client::new(),
+                client: crate::forward::default_client(),
             }],
         );
 
@@ -914,7 +936,7 @@ mod tests {
                 Upstream::Udp("127.0.0.1:1".parse().unwrap()), // will fail
                 Upstream::Doh {
                     url: format!("http://{}/dns-query", good_addr),
-                    client: reqwest::Client::new(),
+                    client: crate::forward::default_client(),
                 },
             ],
             vec![],
