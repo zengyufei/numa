@@ -44,6 +44,7 @@ function Resolve-NumaDevExe {
     foreach ($path in @(
         (Join-Path $Root "bin\numa-dev.exe"),
         (Join-Path $Root "numa-dev.exe"),
+        (Join-Path $Root "target\numa-dev.exe"),
         (Join-Path $Root "target\release\numa-dev.exe")
     )) {
         if (Test-Path $path) {
@@ -292,9 +293,14 @@ try {
 Assert-Admin
 
 $root = Get-Root
-$numaDevArgs = @(Split-NumaDevArgs -Text $env:NUMA_DEV_ARGS)
+$numaDevArgsText = $env:NUMA_DEV_ARGS
+if (-not $numaDevArgsText) {
+    $numaDevArgsText = "--domains dev-domains.txt"
+}
+$numaDevArgs = @(Split-NumaDevArgs -Text $numaDevArgsText)
 $domainFile = Get-DomainFileFromNumaDevArgs -NumaArgs $numaDevArgs
 $numaDevPath = Resolve-NumaDevExe -Candidate $NumaDevExe -Root $root
+Unblock-File -LiteralPath $numaDevPath -ErrorAction SilentlyContinue
 $domainFilePath = Resolve-DomainFilePath -Path $domainFile -Root $root
 $entries = @(Read-DevDomains -Path $domainFilePath)
 if ($entries.Count -eq 0) {

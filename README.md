@@ -85,6 +85,33 @@ The output is:
 target\release\numa-dev.exe
 ```
 
+## Important: Unblock Downloaded EXE Files
+
+Windows may mark `numa-dev.exe` downloaded from GitHub Releases as coming from
+the Internet. That mark is stored as a `Zone.Identifier` stream and can cause
+SmartScreen or Windows security prompts to block startup. The visible symptom is
+often:
+
+```text
+The operation was canceled by the user.
+```
+
+The startup script automatically tries to run `Unblock-File` on the resolved
+`numa-dev.exe`, but if Windows still blocks it, unblock it manually:
+
+```powershell
+Unblock-File .\bin\numa-dev.exe
+```
+
+You can check whether the file is still blocked with:
+
+```powershell
+Get-Item .\bin\numa-dev.exe -Stream *
+```
+
+If `Zone.Identifier` appears, Windows still treats the file as downloaded from
+the Internet.
+
 ## Usage
 
 Start with a visible console:

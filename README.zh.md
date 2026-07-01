@@ -84,6 +84,31 @@ cargo build --release --bin numa-dev
 target\release\numa-dev.exe
 ```
 
+## 重要：解除下载 exe 的阻止状态
+
+从 GitHub Releases 下载的 `numa-dev.exe`，Windows 可能会标记为“来自互联网”。这个
+标记保存在 `Zone.Identifier` 数据流里，可能触发 SmartScreen 或 Windows 安全提示，
+导致启动被拦截。常见报错是：
+
+```text
+The operation was canceled by the user.
+```
+
+启动脚本会自动尝试对解析到的 `numa-dev.exe` 执行 `Unblock-File`，但如果 Windows
+仍然拦截，可以手动解除：
+
+```powershell
+Unblock-File .\bin\numa-dev.exe
+```
+
+可以用下面命令检查是否还带有阻止标记：
+
+```powershell
+Get-Item .\bin\numa-dev.exe -Stream *
+```
+
+如果输出里还有 `Zone.Identifier`，说明 Windows 仍然把它当作从互联网下载的文件。
+
 ## 使用
 
 可见窗口启动：
